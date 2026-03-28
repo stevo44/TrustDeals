@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the TrustEscrow platform.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["buyer", "seller", "rider", "admin"] },
+        "phoneNumber": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Deal": {
+      "title": "Deal",
+      "description": "A secure transaction between a buyer and a seller.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "buyerId": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "riderId": { "type": "string" },
+        "status": { "type": "string", "enum": ["created", "funded", "transit", "delivered", "finalized", "dispute"] },
+        "milestone": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "price", "buyerId", "sellerId", "status"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message in a deal room chat.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "dealId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "type": { "type": "string", "enum": ["text", "system", "image"] },
+        "imageUrl": { "type": "string" }
+      },
+      "required": ["dealId", "senderId", "text", "timestamp", "type"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles."
+    },
+    "/deals/{dealId}": {
+      "schema": "Deal",
+      "description": "Escrow deals."
+    },
+    "/deals/{dealId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Chat messages for a specific deal."
+    }
+  }
+}

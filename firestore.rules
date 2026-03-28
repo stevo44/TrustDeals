@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - role: string (required, ['buyer', 'seller', 'rider', 'admin'])
+    //   - phoneNumber: string (optional)
+    //   - photoURL: string (optional)
+    //   - createdAt: string (required, ISO 8601)
+    //
+    // Collection: deals
+    // Document ID: {dealId}
+    // Fields:
+    //   - id: string (optional)
+    //   - title: string (required)
+    //   - description: string (optional)
+    //   - price: number (required, positive)
+    //   - buyerId: string (required)
+    //   - sellerId: string (required)
+    //   - riderId: string (optional)
+    //   - status: string (required, ['created', 'funded', 'transit', 'delivered', 'finalized', 'dispute'])
+    //   - milestone: number (required, 0-100)
+    //   - createdAt: string (required, ISO 8601)
+    //   - updatedAt: string (required, ISO 8601)
+    //
+    // Collection: deals/{dealId}/messages
+    // Document ID: {messageId}
+    // Fields:
+    //   - id: string (optional)
+    //   - dealId: string (required)
+    //   - senderId: string (required)
+    //   - text: string (required)
+    //   - timestamp: string (required, ISO 8601)
+    //   - type: string (required, ['text', 'system', 'image'])
+    //   - imageUrl: string (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "stephenngulle@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isDealParticipant(dealData) {
+      return isAuthenticated() && (
+        request.auth.uid == dealData.buyerId || 
+        request.auth.uid == dealData.sellerId || 
+        (dealData.riderId != null && request.auth.uid == dealData.riderId)
+      );
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'role', 'phoneNumber', 'photoURL', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['buyer', 'seller', 'rider', 'admin'] &&
+             isValidDateString(data.createdAt);
+    }
+
+    function isValidDeal(data) {
+      return hasOnlyAllowedFields(['id', 'title', 'description', 'price', 'buyerId', 'sellerId', 'riderId', 'status', 'milestone', 'createdAt', 'updatedAt']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 100 &&
+             data.price is number && data.price > 0 &&
+             data.buyerId is string &&
+             data.sellerId is string &&
+             data.status in ['created', 'funded', 'transit', 'delivered', 'finalized', 'dispute'] &&
+             data.milestone is number && data.milestone >= 0 && data.milestone <= 100 &&
+             isValidDateString(data.createdAt) &&
+             isValidDateString(data.updatedAt);
+    }
+
+    function isValidMessage(data) {
+      return hasOnlyAllowedFields(['id', 'dealId', 'senderId', 'text', 'timestamp', 'type', 'imageUrl']) &&
+             data.dealId is string &&
+             data.senderId is string &&
+             data.text is string && data.text.size() > 0 && data.text.size() < 5000 &&
+             isValidDateString(data.timestamp) &&
+             data.type in ['text', 'system', 'image'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (request.resource.data.role != 'admin' || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && isOwner(userId) && (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /deals/{dealId} {
+      allow read: if isDealParticipant(resource.data) || isAdmin();
+      allow create: if isAuthenticated() && isValidDeal(request.resource.data) && request.auth.uid == request.resource.data.buyerId;
+      allow update: if isAuthenticated() && isValidDeal(request.resource.data) && (isDealParticipant(resource.data) || isAdmin());
+      
+      match /messages/{messageId} {
+        allow read: if isDealParticipant(get(/databases/$(database)/documents/deals/$(dealId)).data) || isAdmin();
+        allow create: if isAuthenticated() && isValidMessage(request.resource.data) && 
+                      (request.auth.uid == request.resource.data.senderId || request.resource.data.senderId == 'system') &&
+                      (isDealParticipant(get(/databases/$(database)/documents/deals/$(dealId)).data) || isAdmin());
+      }
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
