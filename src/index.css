@@ -23,6 +23,11 @@
   background: linear-gradient(135deg, #d4af37 0%, #f1d592 50%, #d4af37 100%);
 }
 
+.step-number-outline {
+  -webkit-text-stroke: 1px rgba(212, 175, 55, 0.3);
+  color: transparent;
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

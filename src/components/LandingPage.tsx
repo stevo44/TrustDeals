@@ -1,4 +1,9 @@
-import { ShieldCheck, Verified, PlusCircle, UserPlus, Shield, Menu, ShoppingCart, Store, Bike } from 'lucide-react';
+import { 
+  ShieldCheck, Verified, PlusCircle, UserPlus, Shield, Menu, 
+  ShoppingCart, Store, Bike, Share2, Wallet, Truck, FileCheck 
+} from 'lucide-react';
+// High-quality placeholder for missing hero image
+const heroBg = "https://images.unsplash.com/photo-1563013544-824ae1b704d3?q=80&w=2070&auto=format&fit=crop";
 
 interface LandingPageProps {
   onNavigate: (page: string) => void;
@@ -73,7 +78,7 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
               </div>
               <div className="relative group">
                 <div className="absolute -inset-4 bg-gradient-to-tr from-accent/20 to-transparent rounded-3xl blur-2xl group-hover:blur-3xl transition-all"></div>
-                <div className="relative bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-primary/10 dark:border-slate-800 overflow-hidden aspect-video sm:aspect-square lg:aspect-video flex items-center justify-center bg-cover bg-center" style={{ backgroundImage: "url('https://picsum.photos/seed/escrow/800/600')" }}>
+                <div className="relative bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-primary/10 dark:border-slate-800 overflow-hidden aspect-video sm:aspect-square lg:aspect-video flex items-center justify-center bg-cover bg-center" style={{ backgroundImage: `url(${heroBg})` }}>
                   <div className="absolute inset-0 bg-primary/10 mix-blend-overlay"></div>
                 </div>
               </div>
@@ -81,7 +86,82 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
           </div>
         </section>
 
-        {/* Features Section */}
+        {/* How It Works Section */}
+        <section id="how-it-works" className="py-24 relative overflow-hidden bg-white dark:bg-[#0c141d]">
+          <div className="absolute top-0 left-0 w-full h-full opacity-[0.03] dark:opacity-[0.05] pointer-events-none" style={{ backgroundImage: 'radial-gradient(#1a2b3d 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
+          <div className="absolute -top-24 -left-24 w-96 h-96 bg-accent/10 rounded-full blur-[120px]"></div>
+          <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-primary/20 rounded-full blur-[120px]"></div>
+          
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+            <div className="text-center max-w-2xl mx-auto mb-20 flex flex-col gap-4">
+              <h2 className="text-4xl sm:text-5xl font-black text-slate-900 dark:text-white tracking-tight">How TrustDeals Works</h2>
+              <div className="h-1.5 w-24 bg-accent mx-auto rounded-full"></div>
+              <p className="text-slate-600 dark:text-slate-400 text-lg sm:text-xl font-medium">Your 4-step guide to secure peer-to-peer trading in Cameroon.</p>
+            </div>
+
+            <div className="grid lg:grid-cols-4 gap-8 relative">
+              {/* Step 1 */}
+              <div className="relative group bg-white dark:bg-slate-900/50 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-2xl hover:border-accent/20 transition-all duration-500">
+                <div className="absolute -top-6 -left-4 text-7xl font-black step-number-outline opacity-40 select-none">01</div>
+                <div className="relative z-10">
+                  <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center text-accent mb-8 shadow-lg shadow-primary/30 group-hover:scale-110 transition-transform duration-500 relative">
+                    <div className="absolute inset-0 bg-accent rounded-2xl blur-lg opacity-0 group-hover:opacity-30 transition-opacity"></div>
+                    <Share2 className="w-8 h-8 relative z-10" />
+                  </div>
+                  <h3 className="text-2xl font-extrabold mb-4 text-slate-900 dark:text-white leading-tight">Initiate & Connect</h3>
+                  <p className="text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                    Create a secure Deal Room and invite your counterparty from social media or WhatsApp.
+                  </p>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div className="relative group bg-white dark:bg-slate-900/50 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-2xl hover:border-accent/20 transition-all duration-500 lg:mt-8">
+                <div className="absolute -top-6 -left-4 text-7xl font-black step-number-outline opacity-40 select-none">02</div>
+                <div className="relative z-10">
+                  <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center text-accent mb-8 shadow-lg shadow-primary/30 group-hover:scale-110 transition-transform duration-500 relative">
+                    <div className="absolute inset-0 bg-accent rounded-2xl blur-lg opacity-0 group-hover:opacity-30 transition-opacity"></div>
+                    <Wallet className="w-8 h-8 relative z-10" />
+                  </div>
+                  <h3 className="text-2xl font-extrabold mb-4 text-slate-900 dark:text-white leading-tight">Secure Escrow Deposit</h3>
+                  <p className="text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                    The buyer deposits the agreed XAF amount into our secure holding account.
+                  </p>
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div className="relative group bg-white dark:bg-slate-900/50 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-2xl hover:border-accent/20 transition-all duration-500 lg:mt-16">
+                <div className="absolute -top-6 -left-4 text-7xl font-black step-number-outline opacity-40 select-none">03</div>
+                <div className="relative z-10">
+                  <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center text-accent mb-8 shadow-lg shadow-primary/30 group-hover:scale-110 transition-transform duration-500 relative">
+                    <div className="absolute inset-0 bg-accent rounded-2xl blur-lg opacity-0 group-hover:opacity-30 transition-opacity"></div>
+                    <Truck className="w-8 h-8 relative z-10" />
+                  </div>
+                  <h3 className="text-2xl font-extrabold mb-4 text-slate-900 dark:text-white leading-tight">Verified Logistics</h3>
+                  <p className="text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                    A professional rider is assigned to pick up and deliver the item, tracked in real-time.
+                  </p>
+                </div>
+              </div>
+
+              {/* Step 4 */}
+              <div className="relative group bg-white dark:bg-slate-900/50 p-8 rounded-[2rem] border border-slate-100 dark:border-slate-800 shadow-sm hover:shadow-2xl hover:border-accent/20 transition-all duration-500 lg:mt-24">
+                <div className="absolute -top-6 -left-4 text-7xl font-black step-number-outline opacity-40 select-none">04</div>
+                <div className="relative z-10">
+                  <div className="w-16 h-16 rounded-2xl bg-primary flex items-center justify-center text-accent mb-8 shadow-lg shadow-primary/30 group-hover:scale-110 transition-transform duration-500 relative">
+                    <div className="absolute inset-0 bg-accent rounded-2xl blur-lg opacity-0 group-hover:opacity-30 transition-opacity"></div>
+                    <FileCheck className="w-8 h-8 relative z-10" />
+                  </div>
+                  <h3 className="text-2xl font-extrabold mb-4 text-slate-900 dark:text-white leading-tight">Final Release</h3>
+                  <p className="text-slate-500 dark:text-slate-400 leading-relaxed font-medium">
+                    Once the buyer inspects the item and provides the OTP, funds are instantly released to the seller.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <section id="features" className="py-24 bg-white dark:bg-background-dark/50">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center max-w-3xl mx-auto mb-16 flex flex-col gap-4">

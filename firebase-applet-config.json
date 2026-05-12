@@ -1,10 +1,10 @@
 {
-  "apiKey": "AIzaSyDd7StaVXy5AtsrWs4JsDBf3H2U_-sdwmE",
-  "authDomain": "trustdeals-68e20.firebaseapp.com",
-  "projectId": "trustdeals-68e20",
-  "storageBucket": "trustdeals-68e20.firebasestorage.app",
-  "messagingSenderId": "80650513376",
-  "appId": "1:80650513376:web:7e10b76f9dd95472ae1985",
-  "measurementId": "G-9FJG4FBFNH",
-  "firestoreDatabaseId": "ai-studio-0c2ce409-50e2-48c2-8bb6-51a48d5d0df9"
+  "apiKey": "REPLACED_BY_ENV_VAR",
+  "authDomain": "REPLACED_BY_ENV_VAR",
+  "projectId": "REPLACED_BY_ENV_VAR",
+  "storageBucket": "REPLACED_BY_ENV_VAR",
+  "messagingSenderId": "REPLACED_BY_ENV_VAR",
+  "appId": "REPLACED_BY_ENV_VAR",
+  "measurementId": "REPLACED_BY_ENV_VAR",
+  "firestoreDatabaseId": "REPLACED_BY_ENV_VAR"
 }
