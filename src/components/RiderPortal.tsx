@@ -1,34 +1,48 @@
 import { useState, useEffect } from 'react';
 import { db, auth } from '../lib/firebase';
-import { collection, query, where, onSnapshot, updateDoc, doc, addDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, updateDoc, doc, addDoc, getDoc } from 'firebase/firestore';
 import { Deal, UserProfile } from '../types';
 import { Truck, Bell, MapPin, Navigation, CheckCircle, Package, History, LayoutDashboard, Wallet, Shield, Settings, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { signOut } from 'firebase/auth';
 import { handleFirestoreError, OperationType } from '../lib/firestore-utils';
+import VerificationBanner from './VerificationBanner';
+import VerificationWizard from './VerificationWizard';
+import { ShieldAlert } from 'lucide-react';
 
 interface RiderPortalProps {
+  profile: UserProfile;
   onNavigate: (page: string) => void;
 }
 
-export default function RiderPortal({ onNavigate }: RiderPortalProps) {
+export default function RiderPortal({ profile, onNavigate }: RiderPortalProps) {
   const [availableDeals, setAvailableDeals] = useState<Deal[]>([]);
   const [activeDeals, setActiveDeals] = useState<Deal[]>([]);
   const [historyDeals, setHistoryDeals] = useState<Deal[]>([]);
   const [view, setView] = useState<'available' | 'active' | 'history'>('available');
+  const [showVerificationWizard, setShowVerificationWizard] = useState(false);
+  const isVerified = profile?.verificationStatus === 'verified';
 
   useEffect(() => {
-    const qAvailable = query(collection(db, 'deals'), where('status', '==', 'funded'));
+    const qAvailable = query(collection(db, 'deals'), where('status', '==', 'PAYMENT_LOCKED'));
     const unsubscribeAvailable = onSnapshot(qAvailable, (snapshot) => {
       setAvailableDeals(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deal)));
     });
 
-    const qActive = query(collection(db, 'deals'), where('riderId', '==', auth.currentUser?.uid), where('status', 'in', ['transit', 'delivered']));
+    const qActive = query(
+      collection(db, 'deals'), 
+      where('riderId', '==', auth.currentUser?.uid), 
+      where('status', 'in', ['RIDER_ASSIGNED', 'PICKUP_PENDING', 'IN_TRANSIT', 'AT_BUYER_LOCATION'])
+    );
     const unsubscribeActive = onSnapshot(qActive, (snapshot) => {
       setActiveDeals(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deal)));
     });
 
-    const qHistory = query(collection(db, 'deals'), where('riderId', '==', auth.currentUser?.uid), where('status', '==', 'finalized'));
+    const qHistory = query(
+      collection(db, 'deals'), 
+      where('riderId', '==', auth.currentUser?.uid), 
+      where('status', 'in', ['COMPLETED', 'CANCELLED_OTP_FAILED', 'AUTO_RELEASED', 'RESOLVED'])
+    );
     const unsubscribeHistory = onSnapshot(qHistory, (snapshot) => {
       setHistoryDeals(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Deal)));
     });
@@ -44,8 +58,10 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
     try {
       await updateDoc(doc(db, 'deals', dealId), {
         riderId: auth.currentUser?.uid,
-        status: 'transit',
-        milestone: 50,
+        riderName: (await getDoc(doc(db, 'users', auth.currentUser!.uid))).data()?.displayName || 'Rider',
+        riderPhone: (await getDoc(doc(db, 'users', auth.currentUser!.uid))).data()?.phoneNumber || '',
+        riderNetwork: (await getDoc(doc(db, 'users', auth.currentUser!.uid))).data()?.momoNetwork || 'mtn',
+        status: 'RIDER_ASSIGNED',
         updatedAt: new Date().toISOString(),
       });
       await addDoc(collection(db, 'deals', dealId, 'messages'), {
@@ -65,8 +81,7 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
   const markDelivered = async (dealId: string) => {
     try {
       await updateDoc(doc(db, 'deals', dealId), {
-        status: 'delivered',
-        milestone: 75,
+        status: 'AT_BUYER_LOCATION',
         updatedAt: new Date().toISOString(),
       });
       await addDoc(collection(db, 'deals', dealId, 'messages'), {
@@ -106,7 +121,30 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
         </div>
       </header>
 
+      {/* ── VERIFICATION BANNER ── */}
+      <VerificationBanner
+        profile={profile}
+        onStartVerification={() => setShowVerificationWizard(true)}
+      />
+
       <main className="flex-1 max-w-5xl mx-auto w-full p-4 md:p-6 pb-24 md:pb-6">
+        {!isVerified ? (
+          /* Blocked state for unverified riders */
+          <div className="flex flex-col items-center justify-center py-32 text-center">
+            <ShieldAlert className="w-16 h-16 text-amber-400 mb-6" />
+            <h2 className="text-2xl font-black text-slate-900 dark:text-white mb-3">Account Not Verified</h2>
+            <p className="text-slate-500 dark:text-slate-400 max-w-sm leading-relaxed mb-8">
+              Complete identity verification to start receiving delivery assignments.
+            </p>
+            <button
+              onClick={() => setShowVerificationWizard(true)}
+              className="px-8 py-3 rounded-xl bg-primary text-white font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all"
+            >
+              Verify Now
+            </button>
+          </div>
+        ) : (
+          <>
         <div className="flex bg-white rounded-xl p-1 mb-8 shadow-lg border border-primary/5">
           <TabButton active={view === 'available'} onClick={() => setView('available')} icon={<Navigation className="w-4 h-4" />} label="Available" />
           <TabButton active={view === 'active'} onClick={() => setView('active')} icon={<MapPin className="w-4 h-4" />} label="Active" />
@@ -146,7 +184,7 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
                   <tr key={deal.id}>
                     <td className="px-6 py-5">
                       <p className="font-bold text-primary">#{deal.id.slice(0, 8)}</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Finalized</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Completed</p>
                     </td>
                     <td className="px-6 py-5">
                       <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-[10px] font-black bg-emerald-50 text-emerald-600 border border-emerald-100 uppercase tracking-wider">Verified</span>
@@ -158,6 +196,8 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
             </table>
           </div>
         )}
+          </>
+        )}
       </main>
 
       <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-slate-100 px-8 py-4 flex justify-between items-center z-50 shadow-lg">
@@ -166,6 +206,14 @@ export default function RiderPortal({ onNavigate }: RiderPortalProps) {
         <NavButton icon={<Shield />} label="Identity" />
         <NavButton icon={<Settings />} label="Settings" />
       </nav>
+
+      {/* ── VERIFICATION WIZARD ── */}
+      {showVerificationWizard && (
+        <VerificationWizard
+          profile={profile}
+          onComplete={() => setShowVerificationWizard(false)}
+        />
+      )}
     </div>
   );
 }
@@ -210,8 +258,8 @@ function JobCard({ deal, onAccept }: { deal: Deal, onAccept: () => void }) {
         </div>
         <div className="flex items-center justify-between pt-5 border-t border-slate-50">
           <div className="text-[10px] tracking-wide">
-            <p className="font-bold text-slate-400 uppercase">From: Douala Akwa</p>
-            <p className="font-bold text-primary uppercase mt-0.5">To: Bonamoussadi</p>
+            <p className="font-bold text-slate-400 uppercase">From: {deal.sellerCity || 'Seller City'}</p>
+            <p className="font-bold text-primary uppercase mt-0.5">To: {deal.buyerCity || 'Buyer City'}</p>
           </div>
           <button onClick={onAccept} className="bg-primary text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-primary/10 hover:shadow-primary/20 hover:-translate-y-0.5 transition-all">Accept Job</button>
         </div>
@@ -228,6 +276,10 @@ function ActiveDeliveryCard({ deal, onDelivered }: { deal: Deal, onDelivered: ()
         <div className="absolute inset-0 bg-primary/5"></div>
       </div>
       <div className="p-6">
+        <div className="mb-4">
+          <h3 className="text-lg font-black text-primary">{deal.title}</h3>
+          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Order #{deal.id.slice(0, 8)}</p>
+        </div>
         <div className="flex flex-col gap-4 mb-8">
           <div className="flex gap-4">
             <div className="flex flex-col items-center">
@@ -238,11 +290,11 @@ function ActiveDeliveryCard({ deal, onDelivered }: { deal: Deal, onDelivered: ()
             <div className="flex flex-col gap-6 flex-1">
               <div>
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Pickup</p>
-                <p className="font-bold text-primary">Akwa Business District, Douala</p>
+                <p className="font-bold text-primary">{deal.sellerCity || 'Contact Seller'}</p>
               </div>
               <div>
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Delivery</p>
-                <p className="font-bold text-primary">Bonamoussadi, Villa 24</p>
+                <p className="font-bold text-primary">{deal.buyerCity || 'Contact Buyer'}</p>
               </div>
             </div>
           </div>
@@ -254,11 +306,11 @@ function ActiveDeliveryCard({ deal, onDelivered }: { deal: Deal, onDelivered: ()
           </button>
           <button 
             onClick={onDelivered}
-            disabled={deal.status === 'delivered'}
-            className={`flex flex-col items-center justify-center py-4 rounded-lg border ${deal.status === 'delivered' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}
+            disabled={deal.status === 'AT_BUYER_LOCATION'}
+            className={`flex flex-col items-center justify-center py-4 rounded-lg border ${deal.status === 'AT_BUYER_LOCATION' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-slate-50 text-slate-400 border-slate-100'}`}
           >
             <CheckCircle className="w-5 h-5 mb-1" />
-            <span className="text-[10px] font-bold uppercase tracking-tighter">{deal.status === 'delivered' ? 'Delivered' : 'Mark Delivered'}</span>
+            <span className="text-[10px] font-bold uppercase tracking-tighter">{deal.status === 'AT_BUYER_LOCATION' ? 'Arrived' : 'Mark Arrival'}</span>
           </button>
         </div>
       </div>

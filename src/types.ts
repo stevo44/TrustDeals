@@ -1,5 +1,25 @@
 export type UserRole = 'buyer' | 'seller' | 'rider' | 'admin';
 
+export type VerificationStatus = 'unverified' | 'pending' | 'verified' | 'rejected';
+
+export interface Verification {
+  userId: string;
+  role: UserRole;
+  status: VerificationStatus;
+  phoneVerified: boolean;
+  phoneNumber: string;
+  idFrontUrl: string;
+  idBackUrl: string;
+  selfieUrl: string;
+  businessRegUrl?: string;
+  vehiclePhotoUrl?: string;
+  licenseUrl?: string;
+  submittedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  rejectionReason?: string;
+}
+
 export interface UserProfile {
   uid: string;
   email: string;
@@ -8,16 +28,54 @@ export interface UserProfile {
   phoneNumber?: string;
   photoURL?: string;
   createdAt: string;
+  accountDebt?: number;
+  debtDealId?: string;
+  debtAcknowledged?: boolean;
+  debtAcknowledgedAt?: string;
+  debtStatus?: 'acknowledged' | 'partially_recovered' | 'cleared';
+  accountStatus?: 'normal' | 'debt_hold' | 'suspended' | 'banned';
+  debtHistory?: DebtRecord[];
+  verificationStatus?: VerificationStatus;
+}
+
+export interface DebtRecord {
+  amount: number;
+  dealId: string;
+  reason: string;
+  createdAt: string;
+  clearedAt?: string;
 }
 
 export type DealStatus =
-  | 'waiting'    // created, other party not joined yet
-  | 'active'     // both parties present, payment not initiated
-  | 'funded'     // buyer paid, funds held in escrow
-  | 'transit'    // item dispatched
-  | 'delivered'  // item received, pending OTP
-  | 'finalized'  // funds released to seller
-  | 'dispute';   // disputed
+  | 'WAITING'
+  | 'ACTIVE'
+  | 'PRODUCT_CONFIRMED'
+  | 'PAYMENT_LOCKED'
+  | 'RIDER_ASSIGNED'
+  | 'PICKUP_PENDING'
+  | 'IN_TRANSIT'
+  | 'AT_BUYER_LOCATION'
+  | 'COMPLETED'
+  | 'DISPUTED'
+  | 'SELLER_DISPUTED'
+  | 'RIDER_DISPUTED'
+  | 'RETURN_APPROVED'
+  | 'RETURN_IN_TRANSIT'
+  | 'RETURNED'
+  | 'RESOLVED'
+  | 'CANCELLED'
+  | 'CANCELLED_OTP_FAILED'
+  | 'AUTO_RELEASED'
+  | 'PAYOUT_FAILED'
+  | 'RETURN_RIDER_PAYOUT_FAILED'
+  | 'BUYER_REFUND_FAILED';
+
+export interface StatusHistoryEntry {
+  status: DealStatus;
+  timestamp: string;
+  triggeredBy?: string;
+  note?: string;
+}
 
 export interface Deal {
   id: string;
@@ -27,22 +85,64 @@ export interface Deal {
   buyerId: string;
   buyerName: string;
   buyerEmail?: string;
+  buyerCity: string;
   sellerId: string;
   sellerName: string;
   sellerEmail?: string;
+  sellerCity?: string;
   createdBy: 'buyer' | 'seller';
   riderId?: string;
+  riderName?: string;
   status: DealStatus;
-  milestone: number;
+  statusHistory?: StatusHistoryEntry[];
+  productPrice?: number;
+  platformFee?: number;
+  deliveryFee?: number;
+  totalCharged?: number;
+  sellerReceives?: number;
   paymentReference?: string;
   transferReference?: string;
-  releaseOtp?: string;
-  productImageUrl?: string;
-  platformFee?: number;
-  sellerReceives?: number;
-  buyerConfirmedDelivery?: boolean;
+  fapshiTransId?: string;
+  buyerOtp?: string;
+  otpAttempts?: number;
+  pickupCode?: string;
+  pickupCodeAttempts?: number;
   createdAt: string;
   updatedAt: string;
+  fundedAt?: string;
+  completedAt?: string;
+  productImageUrl?: string;
+  buyerConfirmedDelivery?: boolean;
+  disputeType?: 'buyer' | 'seller' | 'rider';
+  disputeRaisedAt?: string;
+  disputeRaisedBy?: string;
+  disputeReason?: string;
+  disputeDescription?: string;
+  disputeEvidenceUrls?: string[];
+  disputeCounterEvidenceUrls?: string[];
+  disputeResolution?: 'buyer' | 'seller' | 'escalated';
+  disputeResolvedAt?: string;
+  returnRiderId?: string;
+  returnRiderName?: string;
+  sellerPhone?: string;
+  sellerNetwork?: 'mtn' | 'orange';
+  buyerPhone?: string;
+  buyerNetwork?: 'mtn' | 'orange';
+}
+
+export interface DeliveryFeeConfig {
+  routes: Record<string, number>;
+}
+
+export interface FeeBreakdown {
+  productPrice: number;
+  platformFee: number;
+  deliveryFee: number;
+  totalCharged: number;
+  sellerReceives: number;
+  sellerCity: string;
+  buyerCity: string;
+  routeLabel: string;
 }
 
 export type MessageType = 'text' | 'system' | 'image';
@@ -70,11 +170,59 @@ export interface Wallet {
 export interface WalletTransaction {
   id: string;
   userId: string;
-  type: 'fund' | 'release' | 'fee' | 'refund';
+  type: 'fund' | 'release' | 'fee' | 'payout_fee' | 'refund' | 'withdraw';
   amount: number;
   description: string;
   dealId?: string;
   createdAt: string;
+}
+
+export type BuyerDisputeReason =
+  | 'wrong_item'
+  | 'item_damaged'
+  | 'not_matching_description'
+  | 'quantity_incorrect'
+  | 'other';
+
+export type SellerDisputeReason =
+  | 'buyer_unreachable'
+  | 'wrong_delivery_address'
+  | 'buyer_refusing_inspection'
+  | 'false_dispute'
+  | 'other';
+
+export type RiderDisputeReason =
+  | 'buyer_not_present'
+  | 'buyer_unreachable'
+  | 'buyer_refusing_goods'
+  | 'other';
+
+export interface DisputeSubmission {
+  dealId: string;
+  type: 'buyer' | 'seller' | 'rider';
+  reason: BuyerDisputeReason | SellerDisputeReason | RiderDisputeReason;
+  description: string;
+  evidenceUrls?: string[];
+  callAttempts?: number;
+}
+
+export type AdminNotifType =
+  | 'NEW_DISPUTE'
+  | 'OTP_CANCELLED'
+  | 'PAYOUT_FAILED'
+  | 'BUYER_REFUND_FAILED'
+  | 'PICKUP_CODE_FAILED'
+  | 'LOW_BALANCE'
+  | 'RIDER_DISPUTE'
+  | 'AUTO_RELEASE';
+
+export interface AdminNotification {
+  id: string;
+  type: AdminNotifType;
+  dealId?: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
 }
 
 export type NotificationType =
@@ -92,7 +240,20 @@ export type NotificationType =
   | 'deal_disputed'
   | 'wallet_credited'
   | 'wallet_debited'
-  | 'funds_requested';
+  | 'funds_requested'
+  | 'deal_payment_locked'
+  | 'deal_rider_assigned'
+  | 'deal_at_buyer_location'
+  | 'deal_completed'
+  | 'deal_cancelled'
+  | 'dispute_raised'
+  | 'pickup_code_generated'
+  | 'goods_collected'
+  | 'return_approved'
+  | 'debt_notice'
+  | 'verification_submitted'
+  | 'verification_approved'
+  | 'verification_rejected';
 
 export interface Notification {
   id: string;
@@ -105,35 +266,16 @@ export interface Notification {
   createdAt: string;
 }
 
-export interface NotchpayInitResponse {
-  status: string;
-  message: string;
-  transaction: {
-    reference: string;
-    authorization_url: string;
-    amount: number;
-    currency: string;
-  };
-}
-
-export interface NotchpayTransferResponse {
-  status: string;
-  message: string;
-  transfer?: {
-    reference: string;
-    amount: number;
-    currency: string;
-  };
-}
+export type FapshiNetwork = 'mtn' | 'orange';
 
 export interface BuyerPaymentForm {
   momoNumber: string;
   momoName: string;
-  channel: 'cm.mtn' | 'cm.orange';
+  network: FapshiNetwork;
 }
 
 export interface SellerPayoutForm {
   momoNumber: string;
   momoName: string;
-  channel: 'cm.mtn' | 'cm.orange';
+  network: FapshiNetwork;
 }

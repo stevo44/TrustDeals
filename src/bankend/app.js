@@ -20,6 +20,7 @@ import cors from 'cors';
 import { connectDB } from './config/database.js';
 import paymentRoutes from './routes/paymentRoutes.js';
 import webhookRoutes from './routes/webhookRoutes.js';
+import payoutRoutes from './routes/payoutRoutes.js';
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -48,6 +49,9 @@ app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().to
 
 // ─── Payment routes ───────────────────────────────────────────────────────────
 app.use('/payments', paymentRoutes);
+
+// ─── Payout routes (admin/system only — handles seller, rider, refund payouts) ─
+app.use('/payouts', payoutRoutes);
 
 // ─── 404 handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {

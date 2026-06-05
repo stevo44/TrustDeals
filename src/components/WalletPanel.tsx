@@ -16,9 +16,11 @@ interface WalletPanelProps {
 
 const TX_ICONS: Record<string, React.ReactNode> = {
   fund:    <ArrowUpRight className="w-4 h-4 text-red-400" />,
-  release: <ArrowDownLeft className="w-4 h-4 text-emerald-500" />,
-  fee:     <ArrowUpRight className="w-4 h-4 text-amber-500" />,
-  refund:  <ArrowDownLeft className="w-4 h-4 text-blue-400" />,
+  release:    <ArrowDownLeft className="w-4 h-4 text-emerald-500" />,
+  fee:        <ArrowUpRight className="w-4 h-4 text-amber-500" />,
+  payout_fee: <ArrowUpRight className="w-4 h-4 text-slate-400" />,
+  refund:     <ArrowDownLeft className="w-4 h-4 text-blue-400" />,
+  withdraw:   <ArrowUpRight className="w-4 h-4 text-red-500" />,
 };
 
 export default function WalletPanel({ profile, onClose }: WalletPanelProps) {
@@ -101,18 +103,33 @@ export default function WalletPanel({ profile, onClose }: WalletPanelProps) {
             </div>
           </div>
 
-          {/* Info banner */}
-          {isSeller ? (
-            <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
-              <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-xs font-bold text-amber-800 dark:text-amber-200">Seller Payout Policy</p>
-                <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">
-                  You can only request funds after the buyer confirms delivery. A 5% platform fee applies.
-                </p>
+          {/* Pending Escrow Info */}
+          {isSeller && wallet && wallet.pendingBalance > 0 && (
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-800 rounded-xl flex items-center gap-3">
+              <div className="p-2 bg-amber-100 dark:bg-amber-800 rounded-lg">
+                 <Clock className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-wider">Pending Release</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">These funds are locked in escrow and will be released to your balance as soon as the buyer confirms delivery.</p>
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* Withdrawal Button */}
+          {isSeller && (
+            <button 
+              disabled={!wallet || wallet.balance <= 0}
+              onClick={() => alert("Withdrawal feature coming soon! Funds are safely stored in your wallet.")}
+              className="w-full py-4 bg-emerald-600 dark:bg-emerald-500 text-white rounded-xl font-bold font-display shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 transition-all active:scale-[0.98] disabled:opacity-40 disabled:grayscale flex items-center justify-center gap-2"
+            >
+              <ArrowDownLeft className="w-5 h-5 translate-y-0.5" />
+              Request Withdrawal
+            </button>
+          )}
+
+          {/* Info banner */}
+          {!isSeller && (
             <div className="flex items-start gap-3 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl">
               <TrendingUp className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
               <div>

@@ -517,6 +517,10 @@ import { usePresence } from '../hooks/usePresence';
 import PresenceBadge from './PresenceBadge';
 import NotificationCenter, { NotificationBell } from './NotificationCenter';
 import WalletPanel, { WalletBadge } from './WalletPanel';
+import CitySelector from './CitySelector';
+import SellerDebtBanner from './SellerDebtBanner';
+import VerificationBanner from './VerificationBanner';
+import VerificationWizard from './VerificationWizard';
 
 interface DashboardProps {
   profile: UserProfile | null;
@@ -530,6 +534,8 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showWallet, setShowWallet] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [city, setCity] = useState('');
+  const [showVerificationWizard, setShowVerificationWizard] = useState(false);
 
   const isBuyer = profile?.role === 'buyer';
   const isSeller = profile?.role === 'seller';
@@ -575,6 +581,12 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
     const description = formData.get('description') as string;
     const otherPartyEmail = (formData.get('otherPartyEmail') as string).trim().toLowerCase();
 
+    if (!city) {
+      toast.error('Please select a city');
+      setCreating(false);
+      return;
+    }
+
     try {
       // Look up other party by email
       const usersRef = collection(db, 'users');
@@ -584,6 +596,14 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
       const partyExists = !partySnapshot.empty;
       const partyDoc = partyExists ? partySnapshot.docs[0] : null;
       const partyData = partyDoc?.data() as UserProfile | undefined;
+
+      // Soft warning if the seller (other party) is not verified
+      if (partyExists && partyData) {
+        const targetRole = isBuyer ? 'seller' : 'buyer';
+        if (targetRole === 'seller' && partyData.verificationStatus !== 'verified') {
+          toast.warning('⚠️ This seller is not yet verified. Proceed with caution.');
+        }
+      }
 
       // Build deal based on who is creating it
       const dealData = isBuyer
@@ -598,6 +618,8 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
             sellerName: partyExists ? partyData!.displayName : '',
             sellerEmail: otherPartyEmail,
             createdBy: 'buyer',
+            buyerCity: isBuyer ? city : '',
+            sellerCity: '',
             status: partyExists ? 'active' : 'waiting',
             milestone: 0,
             createdAt: new Date().toISOString(),
@@ -615,6 +637,8 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
             buyerName: partyExists ? partyData!.displayName : '',
             buyerEmail: otherPartyEmail,
             createdBy: 'seller',
+            buyerCity: '',
+            sellerCity: isSeller ? city : '',
             status: partyExists ? 'active' : 'waiting',
             milestone: 0,
             createdAt: new Date().toISOString(),
@@ -661,6 +685,7 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
       }
 
       setShowCreateModal(false);
+      setCity('');
       onNavigate('deal-room', docRef.id);
 
     } catch (error: any) {
@@ -704,6 +729,14 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
         </div>
       </header>
 
+      {/* ── VERIFICATION BANNER ── */}
+      {profile && ['buyer', 'seller', 'rider'].includes(profile.role) && (
+        <VerificationBanner
+          profile={profile}
+          onStartVerification={() => setShowVerificationWizard(true)}
+        />
+      )}
+
       <main className="max-w-7xl mx-auto px-6 py-8 lg:px-40">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
           <div>
@@ -719,6 +752,15 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
             {isBuyer ? 'New Transaction' : 'Create a Deal'}
           </button>
         </div>
+
+        {profile?.role === 'seller' && (
+          <div className="mb-8">
+            <SellerDebtBanner
+              profile={profile}
+              onViewDeal={(dealId) => onNavigate('deal-room', dealId)}
+            />
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-20">
@@ -764,8 +806,14 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
 
       {/* ── CREATE DEAL MODAL ── */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-md p-8 shadow-2xl border border-slate-100 dark:border-slate-800">
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onClick={() => setShowCreateModal(false)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-md p-8 shadow-2xl border border-slate-100 dark:border-slate-800 overflow-y-auto max-h-[90vh]"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-black text-slate-900 dark:text-white">{modalTitle}</h2>
               <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
@@ -812,6 +860,13 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
                 />
               </div>
 
+              <CitySelector
+                label={isBuyer ? "Delivery City" : "Your Pickup City"}
+                value={city}
+                onChange={setCity}
+                className="mb-4"
+              />
+
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-1">
                   Description <span className="font-normal text-slate-400">(optional)</span>
@@ -849,6 +904,14 @@ export default function Dashboard({ profile, onNavigate }: DashboardProps) {
           </div>
         </div>
       )}
+
+      {/* ── VERIFICATION WIZARD ── */}
+      {showVerificationWizard && profile && (
+        <VerificationWizard
+          profile={profile}
+          onComplete={() => setShowVerificationWizard(false)}
+        />
+      )}
     </div>
   );
 }
@@ -867,8 +930,8 @@ function DealCard({ deal, profile, onNavigate }: {
     return <ShieldCheck className="text-slate-500" />;
   };
 
-  const isWaiting = deal.status === 'waiting';
-  const isFunded = deal.status === 'funded';
+  const isWaiting = deal.status === 'WAITING';
+  const isFunded  = deal.status === 'PAYMENT_LOCKED';
 
   const isBuyer  = deal.buyerId  === profile?.uid;
   const counterpartId = isBuyer ? (deal.sellerId ?? null) : (deal.buyerId ?? null);
@@ -885,6 +948,12 @@ function DealCard({ deal, profile, onNavigate }: {
         Waiting · {deal.createdBy === 'buyer' ? deal.sellerEmail : deal.buyerEmail}
       </span>
     );
+    if (deal.status === 'PRODUCT_CONFIRMED') return (
+      <span className="flex items-center gap-1.5 w-fit px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200">
+        <ShieldCheck className="w-3 h-3" />
+        Ready to Fund
+      </span>
+    );
     if (isFunded) return (
       <span className="flex items-center gap-1.5 w-fit px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-blue-700 border border-blue-200">
         Escrow Funded
@@ -892,7 +961,7 @@ function DealCard({ deal, profile, onNavigate }: {
     );
     return (
       <span className="flex items-center gap-1.5 w-fit px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
-        {deal.status.replace('_', ' ')}
+        {deal.status.replace(/_/g, ' ')}
       </span>
     );
   };
@@ -920,12 +989,18 @@ function DealCard({ deal, profile, onNavigate }: {
 
       <div className="mb-3">{statusBadge()}</div>
 
-      <div className="mb-2.5 flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-        <span>Progress</span>
-        <span className="text-primary dark:text-slate-300">{deal.milestone}%</span>
-      </div>
-      <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 mb-6 overflow-hidden">
-        <div className="bg-primary h-full rounded-full transition-all duration-500" style={{ width: `${deal.milestone}%` }}></div>
+      <div className="mb-3">
+        <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 mb-6 overflow-hidden">
+          <div 
+            className="bg-primary h-full rounded-full transition-all duration-500" 
+            style={{ width: `${
+              deal.status === 'COMPLETED' ? 100 :
+              deal.status === 'AT_BUYER_LOCATION' ? 75 :
+              deal.status === 'IN_TRANSIT' ? 50 :
+              deal.status === 'PAYMENT_LOCKED' ? 25 : 10
+            }%` }}
+          ></div>
+        </div>
       </div>
 
       <div className="flex items-center justify-between pt-4 border-t border-slate-50 dark:border-slate-800">
@@ -943,7 +1018,8 @@ function DealCard({ deal, profile, onNavigate }: {
           onClick={() => onNavigate('deal-room', deal.id)}
           className="text-xs font-bold text-primary dark:text-slate-300 hover:text-accent flex items-center gap-1 transition-colors"
         >
-          {isWaiting ? 'VIEW INVITE LINK' : 'GO TO ROOM'}
+          {isWaiting ? 'VIEW INVITE LINK' : 
+           (isBuyer && deal.status === 'PRODUCT_CONFIRMED') ? 'FUND ESCROW' : 'GO TO ROOM'}
           <ArrowRight className="w-4 h-4" />
         </button>
       </div>

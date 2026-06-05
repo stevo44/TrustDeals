@@ -8,16 +8,6 @@ import { db } from './firebase';
 import { doc, getDoc, setDoc, updateDoc, addDoc, collection, increment } from 'firebase/firestore';
 import { Wallet, WalletTransaction } from '../types';
 
-const PLATFORM_FEE_PERCENT = 0.05; // 5%
-
-export function calcPlatformFee(amount: number): number {
-  return Math.round(amount * PLATFORM_FEE_PERCENT);
-}
-
-export function calcSellerReceives(amount: number): number {
-  return amount - calcPlatformFee(amount);
-}
-
 // Get or create a wallet for a user
 export async function getOrCreateWallet(userId: string): Promise<Wallet> {
   const walletRef = doc(db, 'wallets', userId);
@@ -79,32 +69,30 @@ export async function lockEscrow(
   await addDoc(collection(db, 'wallets', userId, 'transactions'), tx);
 }
 
-// Release escrow: deduct from pending, credit seller minus fee
+/**
+ * Release escrow: clear buyer pending balance, credit seller the full product price.
+ * The platform fee was already collected from the buyer's totalCharged upfront.
+ * Nothing is deducted from the seller here.
+ */
 export async function releaseEscrow(
-  buyerId: string,
-  sellerId: string,
-  amount: number,
-  dealId: string
+  buyerId:      string,
+  sellerId:     string,
+  productPrice: number,  // the agreed deal price — seller receives this in full
+  dealId:       string,
 ): Promise<void> {
-  const fee = calcPlatformFee(amount);
-  const sellerAmount = calcSellerReceives(amount);
-
-  // Reduce buyer pending
+  // 1. Clear buyer pending balance
   const buyerRef = doc(db, 'wallets', buyerId);
   await getOrCreateWallet(buyerId);
   await updateDoc(buyerRef, {
-    pendingBalance: increment(-amount),
+    pendingBalance: increment(-productPrice),
     updatedAt: new Date().toISOString(),
   });
 
-  // Credit seller
-  await creditWallet(sellerId, sellerAmount, `Payment received for deal (after 5% platform fee)`, dealId);
-
-  // Log fee transaction
-  const feeTx: Omit<WalletTransaction, 'id'> = {
-    userId: sellerId, type: 'fee', amount: fee,
-    description: `5% platform fee for deal ${dealId}`,
-    dealId, createdAt: new Date().toISOString(),
-  };
-  await addDoc(collection(db, 'wallets', sellerId, 'transactions'), feeTx);
+  // 2. Credit seller the full agreed amount — no fee deduction
+  await creditWallet(
+    sellerId,
+    productPrice,
+    `Payment received for deal ${dealId}`,
+    dealId,
+  );
 }

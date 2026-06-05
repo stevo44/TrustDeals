@@ -19,11 +19,12 @@ import { Deal, UserProfile } from '../types';
 import {
   ShieldCheck, Search, Bell, Settings, TrendingUp, TrendingDown,
   ArrowRight, Flag, Users, Bike, Handshake, AlertTriangle,
-  LayoutDashboard, ChevronDown, ChevronUp, X, Check,
+  LayoutDashboard, ChevronDown, ChevronUp, X, Check, Menu,
   RefreshCw, Filter, Download, Calendar, Package, Truck,
-  DollarSign, Clock, Wifi,
+  DollarSign, Clock, Wifi, ShieldAlert,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import AdminVerificationQueue from './AdminVerificationQueue';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Rider {
@@ -39,28 +40,28 @@ interface AdminDashboardProps {
   onNavigate: (page: string) => void;
 }
 
-type Section = 'overview' | 'deals' | 'riders' | 'reports';
+type Section = 'overview' | 'deals' | 'riders' | 'reports' | 'verification';
 
 // ── Status config ──────────────────────────────────────────────────────────────
 const STATUS_COLORS: Record<string, string> = {
-  waiting   : 'bg-slate-100 text-slate-600',
-  active    : 'bg-blue-50 text-blue-700',
-  funded    : 'bg-indigo-50 text-indigo-700',
-  transit   : 'bg-amber-50 text-amber-700',
-  delivered : 'bg-purple-50 text-purple-700',
-  finalized : 'bg-emerald-50 text-emerald-700',
-  dispute   : 'bg-red-50 text-red-700',
+  WAITING           : 'bg-slate-100 text-slate-600',
+  ACTIVE            : 'bg-blue-50 text-blue-700',
+  PAYMENT_LOCKED    : 'bg-indigo-50 text-indigo-700',
+  IN_TRANSIT        : 'bg-amber-50 text-amber-700',
+  AT_BUYER_LOCATION : 'bg-purple-50 text-purple-700',
+  COMPLETED         : 'bg-emerald-50 text-emerald-700',
+  DISPUTED          : 'bg-red-50 text-red-700',
 };
 
 // Valid status transitions (business rules)
 const VALID_TRANSITIONS: Record<string, string[]> = {
-  waiting   : ['active'],
-  active    : ['funded', 'dispute'],
-  funded    : ['transit', 'dispute'],
-  transit   : ['delivered', 'dispute'],
-  delivered : ['finalized', 'dispute'],
-  finalized : [],
-  dispute   : ['finalized'],
+  WAITING           : ['ACTIVE'],
+  ACTIVE            : ['PAYMENT_LOCKED', 'DISPUTED'],
+  PAYMENT_LOCKED    : ['IN_TRANSIT', 'DISPUTED'],
+  IN_TRANSIT        : ['AT_BUYER_LOCATION', 'DISPUTED'],
+  AT_BUYER_LOCATION : ['COMPLETED', 'DISPUTED'],
+  COMPLETED         : [],
+  DISPUTED          : ['COMPLETED'],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,12 +69,14 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const [section,          setSection]          = useState<Section>('overview');
   const [deals,            setDeals]            = useState<Deal[]>([]);
   const [riders,           setRiders]           = useState<Rider[]>([]);
+  const [adminProfile,     setAdminProfile]     = useState<UserProfile | null>(null);
   const [loading,          setLoading]          = useState(true);
   const [selectedDeal,     setSelectedDeal]     = useState<Deal | null>(null);
   const [showDealModal,    setShowDealModal]     = useState(false);
   const [showRiderModal,   setShowRiderModal]   = useState(false);
   const [assigningDealId,  setAssigningDealId]  = useState<string | null>(null);
   const [updatingStatus,   setUpdatingStatus]   = useState(false);
+  const [isSidebarOpen,    setIsSidebarOpen]    = useState(false);
 
   // Filters
   const [filterStatus, setFilterStatus] = useState<string>('');
@@ -106,14 +109,23 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     return () => unsub();
   }, []);
 
+  // ── Admin profile listener ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!auth.currentUser) return;
+    const unsub = onSnapshot(doc(db, 'users', auth.currentUser.uid), (snap) => {
+      if (snap.exists()) setAdminProfile(snap.data() as UserProfile);
+    });
+    return () => unsub();
+  }, []);
+
   // ── Computed stats ────────────────────────────────────────────────────────
   const stats = useMemo(() => {
     const total     = deals.length;
-    const completed = deals.filter(d => d.status === 'finalized').length;
-    const pending   = deals.filter(d => !['finalized', 'dispute'].includes(d.status)).length;
-    const disputes  = deals.filter(d => d.status === 'dispute').length;
-    const volume    = deals.filter(d => d.status === 'finalized').reduce((acc, d) => acc + d.price, 0);
-    const inTransit = deals.filter(d => d.status === 'transit').length;
+    const completed = deals.filter(d => d.status === 'COMPLETED').length;
+    const pending   = deals.filter(d => !['COMPLETED', 'DISPUTED', 'SELLER_DISPUTED', 'RIDER_DISPUTED', 'CANCELLED'].includes(d.status)).length;
+    const disputes  = deals.filter(d => ['DISPUTED', 'SELLER_DISPUTED', 'RIDER_DISPUTED'].includes(d.status)).length;
+    const volume    = deals.filter(d => d.status === 'COMPLETED').reduce((acc, d) => acc + d.price, 0);
+    const inTransit = deals.filter(d => d.status === 'IN_TRANSIT').length;
     return { total, completed, pending, disputes, volume, inTransit };
   }, [deals]);
 
@@ -141,11 +153,11 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
 
     const inRange = deals.filter(d => new Date(d.createdAt) >= cutoff);
     const byStatus = Object.fromEntries(
-      ['waiting', 'active', 'funded', 'transit', 'delivered', 'finalized', 'dispute']
+      ['WAITING', 'ACTIVE', 'PAYMENT_LOCKED', 'IN_TRANSIT', 'AT_BUYER_LOCATION', 'COMPLETED', 'DISPUTED']
         .map(s => [s, inRange.filter(d => d.status === s).length])
     );
     const volume = inRange
-      .filter(d => d.status === 'finalized')
+      .filter(d => d.status === 'COMPLETED')
       .reduce((acc, d) => acc + d.price, 0);
 
     return { inRange: inRange.length, byStatus, volume };
@@ -164,13 +176,8 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
 
     setUpdatingStatus(true);
     try {
-      const milestone = {
-        active: 10, funded: 25, transit: 50, delivered: 75, finalized: 100, dispute: deal.milestone,
-      }[newStatus] ?? deal.milestone;
-
       await updateDoc(doc(db, 'deals', dealId), {
         status   : newStatus,
-        milestone,
         updatedAt: new Date().toISOString(),
       });
       toast.success(`Deal status updated to "${newStatus}"`);
@@ -186,7 +193,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     if (!deal) return;
 
     // Business rule: payment must be completed
-    if (!['funded', 'transit', 'delivered'].includes(deal.status)) {
+    if (!['PAYMENT_LOCKED', 'IN_TRANSIT', 'AT_BUYER_LOCATION'].includes(deal.status)) {
       toast.error('Cannot assign rider: payment not completed yet.');
       return;
     }
@@ -194,8 +201,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
     try {
       await updateDoc(doc(db, 'deals', dealId), {
         riderId  : riderId,
-        status   : 'transit',
-        milestone: 50,
+        status   : 'IN_TRANSIT',
         updatedAt: new Date().toISOString(),
       });
       await updateDoc(doc(db, 'users', riderId), {
@@ -212,15 +218,15 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
   const markDelivered = async (dealId: string) => {
     const deal = deals.find(d => d.id === dealId);
     if (!deal) return;
-    if (deal.status !== 'transit') {
+    if (deal.status !== 'IN_TRANSIT') {
       toast.error('Cannot mark delivered: rider has not picked up yet.');
       return;
     }
-    await updateDealStatus(dealId, 'delivered');
+    await updateDealStatus(dealId, 'AT_BUYER_LOCATION');
   };
 
   const resolveDispute = async (dealId: string) => {
-    await updateDealStatus(dealId, 'finalized');
+    await updateDealStatus(dealId, 'COMPLETED');
     toast.success('Dispute resolved — funds released.');
   };
 
@@ -250,10 +256,22 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900 font-display">
-
+    <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900 font-display relative">
+      
+      {/* Mobile Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-30 lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+ 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shadow-sm">
+      <aside className={`
+        fixed lg:static inset-y-0 left-0 w-64 bg-white border-r border-slate-200 
+        flex flex-col shadow-xl lg:shadow-sm z-40 transition-transform duration-300
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-2 text-primary">
             <ShieldCheck className="w-8 h-8" />
@@ -263,15 +281,16 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-3 mb-2">Overview</div>
-          <NavItem active={section === 'overview'} icon={<LayoutDashboard className="w-5 h-5" />} label="Dashboard"    onClick={() => setSection('overview')} />
-          <NavItem active={section === 'reports'}  icon={<TrendingUp     className="w-5 h-5" />} label="Reports"       onClick={() => setSection('reports')}  />
+          <NavItem active={section === 'overview'} icon={<LayoutDashboard className="w-5 h-5" />} label="Dashboard"    onClick={() => { setSection('overview'); setIsSidebarOpen(false); }} />
+          <NavItem active={section === 'reports'}  icon={<TrendingUp     className="w-5 h-5" />} label="Reports"       onClick={() => { setSection('reports'); setIsSidebarOpen(false); }}  />
 
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-3 mb-2 mt-6">Management</div>
-          <NavItem active={section === 'deals'}    icon={<Handshake      className="w-5 h-5" />} label="Active Deals"  onClick={() => setSection('deals')}    />
-          <NavItem active={section === 'riders'}   icon={<Bike           className="w-5 h-5" />} label="Riders"        onClick={() => setSection('riders')}   />
+          <NavItem active={section === 'deals'}    icon={<Handshake      className="w-5 h-5" />} label="Active Deals"  onClick={() => { setSection('deals'); setIsSidebarOpen(false); }}    />
+          <NavItem active={section === 'riders'}   icon={<Bike           className="w-5 h-5" />} label="Riders"        onClick={() => { setSection('riders'); setIsSidebarOpen(false); }}   />
 
           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-3 mb-2 mt-6">Risk Control</div>
-          <NavItem icon={<AlertTriangle className="w-5 h-5" />} label="Dispute Center" badge={stats.disputes} onClick={() => { setSection('deals'); setFilterStatus('dispute'); }} />
+          <NavItem icon={<AlertTriangle className="w-5 h-5" />} label="Dispute Center" badge={stats.disputes} onClick={() => { setSection('deals'); setFilterStatus('DISPUTED'); setIsSidebarOpen(false); }} />
+          <NavItem active={section === 'verification'} icon={<ShieldAlert className="w-5 h-5" />} label="Verification" onClick={() => { setSection('verification'); setIsSidebarOpen(false); }} />
         </nav>
 
         <div className="p-4 border-t border-slate-100">
@@ -286,11 +305,17 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
       </aside>
 
       {/* ── Main ─────────────────────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-
+      <main className="flex-1 flex flex-col overflow-hidden w-full">
+ 
         {/* Header */}
-        <header className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+        <header className="bg-white border-b border-slate-200 px-4 lg:px-8 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
           <div className="flex items-center gap-4 flex-1">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 lg:hidden text-slate-500 hover:bg-slate-100 rounded-lg"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
             <div className="relative max-w-md w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
               <input
@@ -320,14 +345,14 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
         </header>
 
         <div className="flex-1 overflow-y-auto">
-          <div className="p-8 space-y-8 max-w-7xl mx-auto w-full">
+          <div className="p-4 lg:p-8 space-y-6 lg:space-y-8 max-w-7xl mx-auto w-full">
 
             {/* ── OVERVIEW ──────────────────────────────────────────────── */}
             {section === 'overview' && (
               <>
                 <div>
                   <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight mb-6">Platform Overview</h2>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-5">
                     <StatCard title="Total Volume"      value={`${stats.volume.toLocaleString()} FCFA`} icon={<DollarSign className="w-5 h-5" />} color="text-emerald-600" bg="bg-emerald-50" />
                     <StatCard title="Total Deals"       value={stats.total.toString()}   icon={<Handshake  className="w-5 h-5" />} color="text-blue-600"    bg="bg-blue-50"    />
                     <StatCard title="In Transit"        value={stats.inTransit.toString()} icon={<Truck    className="w-5 h-5" />} color="text-amber-600"   bg="bg-amber-50"   />
@@ -418,10 +443,10 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                 </div>
 
                 {/* Summary cards */}
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-5">
                   <StatCard title="Total Deals"      value={reportData.inRange.toString()}            icon={<Package    className="w-5 h-5" />} color="text-slate-600"   bg="bg-slate-100" />
-                  <StatCard title="Completed"        value={(reportData.byStatus.finalized || 0).toString()} icon={<Check className="w-5 h-5" />} color="text-emerald-600" bg="bg-emerald-50" />
-                  <StatCard title="Pending"          value={((reportData.byStatus.active || 0) + (reportData.byStatus.funded || 0) + (reportData.byStatus.transit || 0)).toString()} icon={<Clock className="w-5 h-5" />} color="text-blue-600" bg="bg-blue-50" />
+                  <StatCard title="Completed"        value={(reportData.byStatus.COMPLETED || 0).toString()} icon={<Check className="w-5 h-5" />} color="text-emerald-600" bg="bg-emerald-50" />
+                  <StatCard title="Pending"          value={((reportData.byStatus.ACTIVE || 0) + (reportData.byStatus.PAYMENT_LOCKED || 0) + (reportData.byStatus.IN_TRANSIT || 0)).toString()} icon={<Clock className="w-5 h-5" />} color="text-blue-600" bg="bg-blue-50" />
                   <StatCard title="Transaction Vol." value={`${reportData.volume.toLocaleString()} XAF`} icon={<DollarSign className="w-5 h-5" />} color="text-indigo-600"  bg="bg-indigo-50" />
                 </div>
 
@@ -432,7 +457,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     {Object.entries(reportData.byStatus).map(([status, count]) => {
                       const max   = Math.max(...Object.values(reportData.byStatus), 1);
                       const pct   = (count / max) * 100;
-                      const color = { waiting: 'bg-slate-400', active: 'bg-blue-500', funded: 'bg-indigo-500', transit: 'bg-amber-500', delivered: 'bg-purple-500', finalized: 'bg-emerald-500', dispute: 'bg-red-500' }[status] ?? 'bg-slate-400';
+                      const color = { WAITING: 'bg-slate-400', ACTIVE: 'bg-blue-500', PAYMENT_LOCKED: 'bg-indigo-500', IN_TRANSIT: 'bg-amber-500', AT_BUYER_LOCATION: 'bg-purple-500', COMPLETED: 'bg-emerald-500', DISPUTED: 'bg-red-500' }[status] ?? 'bg-slate-400';
                       return (
                         <div key={status} className="flex items-center gap-4">
                           <div className="w-24 text-xs font-bold text-slate-600 capitalize">{status}</div>
@@ -451,6 +476,19 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                     <Download className="w-4 h-4" /> Export Report CSV
                   </button>
                 </div>
+              </>
+            )}
+            {/* ── VERIFICATION ──────────────────────────────────────────── */}
+            {section === 'verification' && (
+              <>
+                <h2 className="text-2xl font-extrabold text-slate-900 tracking-tight">Verification Queue</h2>
+                {adminProfile ? (
+                  <AdminVerificationQueue adminProfile={adminProfile} />
+                ) : (
+                  <div className="flex items-center justify-center py-16">
+                    <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-primary" />
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -497,7 +535,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
             </div>
 
             <div className="flex gap-3 pt-2">
-              {['funded', 'transit'].includes(selectedDeal.status) && (
+              {['PAYMENT_LOCKED', 'IN_TRANSIT'].includes(selectedDeal.status) && (
                 <button
                   onClick={() => { setShowDealModal(false); setAssigningDealId(selectedDeal.id); setShowRiderModal(true); }}
                   className="flex-1 py-2.5 bg-amber-500 text-white rounded-xl text-sm font-bold hover:bg-amber-600 transition-all"
@@ -505,7 +543,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <Truck className="inline w-4 h-4 mr-1" /> Assign Rider
                 </button>
               )}
-              {selectedDeal.status === 'transit' && (
+              {selectedDeal.status === 'IN_TRANSIT' && (
                 <button
                   onClick={() => { markDelivered(selectedDeal.id); setShowDealModal(false); }}
                   className="flex-1 py-2.5 bg-purple-600 text-white rounded-xl text-sm font-bold hover:bg-purple-700 transition-all"
@@ -513,7 +551,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
                   <Check className="inline w-4 h-4 mr-1" /> Mark Delivered
                 </button>
               )}
-              {selectedDeal.status === 'dispute' && (
+              {selectedDeal.status === 'DISPUTED' && (
                 <button
                   onClick={() => { resolveDispute(selectedDeal.id); setShowDealModal(false); }}
                   className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all"
@@ -532,7 +570,7 @@ export default function AdminDashboard({ onNavigate }: AdminDashboardProps) {
           <div className="space-y-3">
             {(() => {
               const deal = deals.find(d => d.id === assigningDealId);
-              if (!deal || !['funded', 'transit', 'delivered'].includes(deal.status)) {
+              if (!deal || !['PAYMENT_LOCKED', 'IN_TRANSIT', 'AT_BUYER_LOCATION', 'COMPLETED'].includes(deal.status)) {
                 return (
                   <div className="text-center py-6">
                     <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
@@ -671,17 +709,17 @@ function DealsTable({ deals, riders, onViewDeal, onAssignRider, onMarkDelivered,
                       <button onClick={() => onViewDeal(deal)} className="px-2.5 py-1.5 bg-slate-100 hover:bg-primary hover:text-white text-slate-600 rounded-lg text-xs font-bold transition-all">
                         View
                       </button>
-                      {['funded', 'transit'].includes(deal.status) && !deal.riderId && (
+                      {['PAYMENT_LOCKED', 'IN_TRANSIT'].includes(deal.status) && !deal.riderId && (
                         <button onClick={() => onAssignRider(deal.id)} className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-xs font-bold transition-all">
                           <Truck className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {deal.status === 'transit' && (
+                      {deal.status === 'IN_TRANSIT' && (
                         <button onClick={() => onMarkDelivered(deal.id)} className="px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-xs font-bold transition-all">
                           <Check className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {deal.status === 'dispute' && (
+                      {deal.status === 'DISPUTED' && (
                         <button onClick={() => onResolveDispute(deal.id)} className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-bold transition-all">
                           <Flag className="w-3.5 h-3.5" />
                         </button>

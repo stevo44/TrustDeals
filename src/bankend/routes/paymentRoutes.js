@@ -1,63 +1,29 @@
 /**
- * routes/paymentRoutes.js
- * ------------------------
- * All /payments/** endpoints.
+ * routes/payoutRoutes.js
+ * -----------------------
+ * Payout endpoints — all require system/admin authentication.
  *
- * Mount in app.js:
- *   import paymentRoutes from './routes/paymentRoutes.js';
- *   app.use('/payments', paymentRoutes);
+ * POST /payouts/release         → full OTP-confirmed payout sequence
+ * POST /payouts/refund          → buyer refund with fee policy enforcement
+ * POST /payouts/return-rider    → pay the return rider after RETURNED state
  */
 
-import { Router } from 'express';
-import { authenticate, requireRole, validate } from '../middleware/auth.js';
+import express from 'express';
+import { authenticate, requireRole } from '../middleware/auth.js';
 import {
-  initiatePayment,
-  getPaymentBySession,
-  releasePayment,
-  refundPayment,
-  verifyPayment,
-} from '../controllers/paymentController.js';
+  releasePayout,
+  issueRefund,
+  payReturnRiderPayout,
+} from '../controllers/payoutController.js';
 
-const router = Router();
+const router = express.Router();
 
-// All payment routes require authentication
+// All payout routes require authentication and admin/system role
 router.use(authenticate);
+router.use(requireRole(['admin', 'system']));
 
-// ── POST /payments/initiate ──────────────────────────────────────────────────
-// Buyer initiates escrow payment.
-// Guard: authenticated + buyer role (paymentController also re-checks ownership).
-router.post(
-  '/initiate',
-  validate(['session_id', 'phone', 'network', 'amount']),
-  initiatePayment
-);
-
-// ── GET /payments/session/:session_id ────────────────────────────────────────
-// Fetch payment record for a session (buyer, seller, or admin).
-router.get('/session/:session_id', getPaymentBySession);
-
-// ── GET /payments/verify/:reference ─────────────────────────────────────────
-// Manually poll Kang to verify payment (fallback if webhook missed).
-router.get('/verify/:reference', verifyPayment);
-
-// ── POST /payments/release ───────────────────────────────────────────────────
-// Release escrowed funds to seller.
-// ADMIN / SYSTEM only — never exposed to buyer/seller directly.
-router.post(
-  '/release',
-  requireRole('admin', 'system'),
-  validate(['session_id']),
-  releasePayment
-);
-
-// ── POST /payments/refund ────────────────────────────────────────────────────
-// Refund escrowed funds to buyer.
-// ADMIN only.
-router.post(
-  '/refund',
-  requireRole('admin'),
-  validate(['session_id']),
-  refundPayment
-);
+router.post('/release',       releasePayout);
+router.post('/refund',        issueRefund);
+router.post('/return-rider',  payReturnRiderPayout);
 
 export default router;

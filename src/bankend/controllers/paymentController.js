@@ -1,402 +1,325 @@
 /**
- * controllers/paymentController.js
- * ----------------------------------
- * Handles payment initiation, status queries, and manual
- * payout/refund triggers (admin-only).
+ * controllers/payoutController.js
+ * ---------------------------------
+ * Handles the full payout sequence after OTP confirmation:
+ *   Step 1 → Pay rider
+ *   Step 2 → Pay seller (with debt check)
+ *   Step 3 → Mark deal COMPLETED
  *
- * All escrow-sensitive mutations use atomic MongoDB operations
- * to prevent race conditions.
+ * Also handles:
+ *   - Buyer refunds (cancellation, OTP failure, dispute ruling)
+ *   - Return rider payouts
+ *   - Admin retry on failed payouts
+ *
+ * All Fapshi payout credentials are loaded from FAPSHI_PAYOUT_* env vars.
+ * NEVER called from frontend directly.
  */
 
-import crypto from 'crypto';
-import Payment from '../models/Payment.js';
-import DealSession from '../models/DealSession.js';
+import admin from 'firebase-admin';
 import {
-  initiateKangPayment,
-  checkKangPaymentStatus,
-  payoutToSeller,
-  refundToBuyer,
-  generateTransactionRef,
-} from '../services/paymentService.js';
+  payRider,
+  paySeller,
+  refundBuyer,
+  payReturnRider,
+  getPayoutBalance,
+} from '../services/payoutService.js';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function formatPhone(raw) {
-  const digits = String(raw).replace(/\D/g, '');
-  if (digits.startsWith('237')) return digits;
-  if (digits.startsWith('0'))   return `237${digits.slice(1)}`;
-  return `237${digits}`;
-}
+const db = admin.firestore();
+
+const LOW_BALANCE_THRESHOLD = 10000; // XAF
 
 function sendError(res, status, message, details = {}) {
   return res.status(status).json({ success: false, message, ...details });
 }
 
-// ─── POST /payments/initiate ──────────────────────────────────────────────────
-/**
- * Buyer initiates an escrow payment.
- *
- * Guards:
- *  - Authenticated buyer only
- *  - Session must be in PRODUCT_CONFIRMED state
- *  - No existing pending/paid payment for this session (idempotency)
- *
- * Body: { session_id, phone, network, amount }
- */
-export async function initiatePayment(req, res) {
-  try {
-    const { session_id, phone, network, amount } = req.body;
-    const userId = req.user.id;
-
-    // ── 1. Input validation ──
-    if (!session_id || !phone || !network || !amount) {
-      return sendError(res, 400, 'Missing required fields: session_id, phone, network, amount');
-    }
-    if (!['mtn', 'orange'].includes(network)) {
-      return sendError(res, 400, 'Invalid network. Must be "mtn" or "orange"');
-    }
-    const parsedAmount = Number(amount);
-    if (!Number.isInteger(parsedAmount) || parsedAmount < 100) {
-      return sendError(res, 400, 'Amount must be an integer ≥ 100 XAF');
-    }
-
-    // ── 2. Load session ──
-    const session = await DealSession.findById(session_id).lean();
-    if (!session) {
-      return sendError(res, 404, 'Deal session not found');
-    }
-
-    // ── 3. Authorize: only the buyer of this session ──
-    if (String(session.buyer_id) !== String(userId)) {
-      return sendError(res, 403, 'Only the buyer of this session can initiate payment');
-    }
-
-    // ── 4. Enforce state machine ──
-    if (session.status !== 'PRODUCT_CONFIRMED') {
-      return sendError(res, 409, `Payment not allowed in status "${session.status}". Session must be PRODUCT_CONFIRMED.`);
-    }
-
-    // ── 5. Idempotency: check for existing active payment ──
-    const existingPayment = await Payment.findOne({
-      session_id,
-      status: { $in: ['pending', 'paid'] },
-    }).lean();
-
-    if (existingPayment) {
-      // Return existing payment info so frontend can show appropriate state
-      return res.status(200).json({
-        success: true,
-        idempotent: true,
-        message: 'Payment already in progress',
-        payment: {
-          id: existingPayment._id,
-          status: existingPayment.status,
-          transaction_reference: existingPayment.transaction_reference,
-          amount: existingPayment.amount,
-        },
-      });
-    }
-
-    // ── 6. Generate transaction reference ──
-    const transactionRef = generateTransactionRef(session_id);
-    const formattedPhone = formatPhone(phone);
-
-    // ── 7. Persist payment record as "pending" BEFORE calling Kang ──
-    //    This ensures we have a record even if the Kang call partially
-    //    succeeds before a network failure.
-    const payment = await Payment.create({
-      session_id,
-      buyer_id:  session.buyer_id,
-      seller_id: session.seller_id,
-      amount:    parsedAmount,
-      currency:  session.currency || 'XAF',
-      phone:     formattedPhone,
-      network,
-      transaction_reference: transactionRef,
-      status: 'pending',
-    });
-
-    // ── 8. Transition session → PAYMENT_PENDING ──
-    await DealSession.findByIdAndUpdate(session_id, {
-      status:     'PAYMENT_PENDING',
-      payment_id: payment._id,
-    });
-
-    // ── 9. Call Kang API ──
-    let kangResult;
-    try {
-      kangResult = await initiateKangPayment({
-        amount:     parsedAmount,
-        phone:      formattedPhone,
-        network,
-        reference:  transactionRef,
-        session_id: String(session_id),
-        description: `Escrow: ${session.title || 'TrustDeals purchase'}`,
-      });
-    } catch (kangErr) {
-      // Kang call failed — revert status so buyer can retry
-      await Payment.findByIdAndUpdate(payment._id, { status: 'failed', failed_at: new Date() });
-      await DealSession.findByIdAndUpdate(session_id, { status: 'PRODUCT_CONFIRMED', payment_id: null });
-
-      console.error('[PaymentController] Kang initiation failed:', kangErr.message);
-      return sendError(res, 502, 'Payment gateway error. Please try again.', {
-        detail: process.env.NODE_ENV === 'development' ? kangErr.message : undefined,
-      });
-    }
-
-    // ── 10. Store Kang's payment ID ──
-    await Payment.findByIdAndUpdate(payment._id, {
-      kang_payment_id: kangResult.kang_payment_id,
-    });
-
-    // ── 11. Respond ──
-    return res.status(201).json({
-      success: true,
-      message: 'Payment initiated. Buyer will receive a MoMo prompt.',
-      payment: {
-        id:                    payment._id,
-        status:                'pending',
-        transaction_reference: transactionRef,
-        amount:                parsedAmount,
-        network,
-        kang_payment_id:       kangResult.kang_payment_id,
-      },
-      session: {
-        id:     session_id,
-        status: 'PAYMENT_PENDING',
-      },
-    });
-  } catch (err) {
-    console.error('[PaymentController] initiatePayment error:', err);
-    return sendError(res, 500, 'Internal server error');
-  }
+// ── Helper: append to statusHistory ──────────────────────────────────────────
+async function appendStatusHistory(dealRef, status, triggeredBy = 'system', note = '') {
+  await dealRef.update({
+    status,
+    statusHistory: admin.firestore.FieldValue.arrayUnion({
+      status,
+      timestamp: new Date().toISOString(),
+      triggeredBy,
+      ...(note ? { note } : {}),
+    }),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
-// ─── GET /payments/session/:session_id ───────────────────────────────────────
-/**
- * Fetch payment record for a session.
- * Accessible by buyer, seller, or admin.
- */
-export async function getPaymentBySession(req, res) {
-  try {
-    const { session_id } = req.params;
-    const userId = req.user.id;
-
-    const session = await DealSession.findById(session_id).lean();
-    if (!session) return sendError(res, 404, 'Session not found');
-
-    // Authorization: must be a party to the session or admin
-    const isParty = [String(session.buyer_id), String(session.seller_id)].includes(String(userId));
-    if (!isParty && req.user.role !== 'admin') {
-      return sendError(res, 403, 'Access denied');
-    }
-
-    const payment = await Payment.findOne({ session_id }).lean();
-    if (!payment) return sendError(res, 404, 'No payment found for this session');
-
-    return res.json({ success: true, payment });
-  } catch (err) {
-    console.error('[PaymentController] getPaymentBySession:', err);
-    return sendError(res, 500, 'Internal server error');
-  }
+// ── Helper: write admin notification ─────────────────────────────────────────
+async function notifyAdmin(type, dealId, message) {
+  await db.collection('adminNotifications').add({
+    type,
+    dealId: dealId ?? null,
+    message,
+    timestamp: new Date().toISOString(),
+    read: false,
+  });
 }
 
-// ─── POST /payments/release ─────────────────────────────────────────────────
+// ── Helper: send user notification ───────────────────────────────────────────
+async function notifyUser(userId, type, title, body, dealId) {
+  await db.collection('notifications').doc(userId).collection('items').add({
+    userId,
+    type,
+    title,
+    body,
+    dealId: dealId ?? null,
+    read: false,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+// ── POST /payouts/release ─────────────────────────────────────────────────────
 /**
- * Release escrowed funds to the seller.
- * CRITICAL: Can ONLY be called after:
- *   1. Session status is DELIVERED
- *   2. OTP is verified (otp_verified = true on session)
- *
- * Access: admin or system only (protected by role middleware)
- *
- * Body: { session_id }
+ * Full payout sequence triggered after buyer OTP confirmation.
+ * Body: { dealId }
+ * Auth: system or admin only
  */
-export async function releasePayment(req, res) {
+export async function releasePayout(req, res) {
+  const { dealId } = req.body;
+  if (!dealId) return sendError(res, 400, 'dealId is required');
+
+  const dealRef  = db.collection('deals').doc(dealId);
+  const dealSnap = await dealRef.get();
+  if (!dealSnap.exists) return sendError(res, 404, 'Deal not found');
+
+  const deal = dealSnap.data();
+
+  // Guard: must be AT_BUYER_LOCATION or PAYMENT_LOCKED (for manual retry)
+  if (!['AT_BUYER_LOCATION', 'PAYOUT_FAILED'].includes(deal.status)) {
+    return sendError(res, 409, `Cannot release payout in status "${deal.status}"`);
+  }
+
+  // ── Step 1: Pay rider ──
   try {
-    const { session_id } = req.body;
-    if (!session_id) return sendError(res, 400, 'session_id is required');
-
-    // ── 1. Load session ──
-    const session = await DealSession.findById(session_id);
-    if (!session) return sendError(res, 404, 'Session not found');
-
-    // ── 2. Enforce prerequisites ──
-    if (session.status !== 'DELIVERED') {
-      return sendError(res, 409, `Cannot release payment: session status is "${session.status}" (must be DELIVERED)`);
-    }
-    if (!session.otp_verified) {
-      return sendError(res, 409, 'Cannot release payment: delivery OTP not yet verified');
-    }
-    if (!session.seller_phone || !session.seller_network) {
-      return sendError(res, 422, 'Seller payout details (phone, network) not set on session');
+    if (!deal.riderId || !deal.riderPhone || !deal.riderNetwork) {
+      throw new Error('Rider payout details missing (riderId, riderPhone, riderNetwork)');
     }
 
-    // ── 3. Load payment ──
-    const payment = await Payment.findOne({ session_id, status: 'paid' });
-    if (!payment) {
-      return sendError(res, 409, 'No escrowed payment found (must be in "paid" status)');
+    const riderResult = await payRider({
+      dealId,
+      riderId:    deal.riderId,
+      phone:      deal.riderPhone,
+      network:    deal.riderNetwork,
+      sellerCity: deal.sellerCity,
+      buyerCity:  deal.buyerCity,
+    });
+
+    await dealRef.update({
+      riderPayoutTransId: riderResult.transId,
+      riderPayoutAmount:  riderResult.amount,
+      riderPaidAt:        new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[PayoutController] Rider payout failed:', err.message);
+    await appendStatusHistory(dealRef, 'PAYOUT_FAILED', 'system', `Rider payout failed: ${err.message}`);
+    await notifyAdmin('PAYOUT_FAILED', dealId, `Rider payout failed on Deal ${dealId}: ${err.message}`);
+    return sendError(res, 502, 'Rider payout failed. Admin notified.');
+  }
+
+  // ── Step 2: Pay seller (with debt check) ──
+  try {
+    if (!deal.sellerPhone || !deal.sellerNetwork) {
+      throw new Error('Seller payout details missing (sellerPhone, sellerNetwork)');
     }
 
-    // ── 4. Call Kang payout ──
-    let payoutResult;
-    try {
-      payoutResult = await payoutToSeller({
-        amount:     payment.amount,
-        phone:      session.seller_phone,
-        network:    session.seller_network,
-        session_id: String(session_id),
-        description: `Seller payout: ${session.title}`,
-      });
-    } catch (kangErr) {
-      console.error('[PaymentController] Payout failed:', kangErr.message);
-      return sendError(res, 502, 'Payout failed. Please retry or contact support.', {
-        detail: process.env.NODE_ENV === 'development' ? kangErr.message : undefined,
-      });
+    // Fetch seller's current debt
+    const sellerSnap  = await db.collection('users').doc(deal.sellerId).get();
+    const sellerData  = sellerSnap.data() || {};
+    const accountDebt = sellerData.accountDebt ?? 0;
+    // Seller receives the full agreed product price.
+    // Platform fee was collected from buyer's totalCharged — not deducted from seller.
+    const productPrice = deal.price ?? deal.productPrice ?? 0;
+    if (productPrice === 0) {
+      return sendError(res, 422, 'deal.price missing — cannot calculate seller payout');
     }
 
-    // ── 5. Update payment & session atomically (best-effort) ──
-    await Promise.all([
-      Payment.findByIdAndUpdate(payment._id, {
-        status:           'released',
-        payout_reference: payoutResult.payout_reference,
-        seller_phone:     session.seller_phone,
-        seller_network:   session.seller_network,
-        released_at:      new Date(),
-      }),
-      DealSession.findByIdAndUpdate(session_id, {
-        status:       'COMPLETED',
-        completed_at: new Date(),
-      }),
-    ]);
+    const sellerResult = await paySeller({
+      dealId,
+      sellerId:     deal.sellerId,
+      phone:        deal.sellerPhone,
+      network:      deal.sellerNetwork,
+      productPrice,
+      accountDebt,
+    });
+
+    // Update seller debt record
+    const sellerUpdates = {
+      accountDebt: sellerResult.remainingDebt,
+    };
+    if (sellerResult.remainingDebt <= 0) {
+      sellerUpdates.accountStatus = 'normal';
+      sellerUpdates.debtStatus    = 'cleared';
+    } else if (sellerResult.debtDeducted > 0) {
+      sellerUpdates.debtStatus = 'partially_recovered';
+    }
+
+    await db.collection('users').doc(deal.sellerId).update(sellerUpdates);
+
+    await dealRef.update({
+      sellerPayoutTransId: sellerResult.transId,
+      sellerPayoutAmount:  sellerResult.payoutAmount,
+      sellerDebtDeducted:  sellerResult.debtDeducted,
+      sellerPaidAt:        new Date().toISOString(),
+    });
+
+    // Notify seller if payout was held due to debt
+    if (sellerResult.payoutAmount === 0) {
+      await notifyUser(
+        deal.sellerId,
+        'deal_completed',
+        '⚠️ Payout Applied to Debt Balance',
+        `Your payment of ${productPrice.toLocaleString()} XAF has been applied to your outstanding account balance. Remaining debt: ${sellerResult.remainingDebt.toLocaleString()} XAF.`,
+        dealId,
+      );
+    }
+  } catch (err) {
+    console.error('[PayoutController] Seller payout failed:', err.message);
+    await appendStatusHistory(dealRef, 'PAYOUT_FAILED', 'system', `Seller payout failed: ${err.message}`);
+    await notifyAdmin('PAYOUT_FAILED', dealId, `Seller payout failed on Deal ${dealId}: ${err.message}`);
+    return sendError(res, 502, 'Seller payout failed. Rider was paid. Admin notified.');
+  }
+
+  // ── Step 3: Mark COMPLETED ──
+  const sellerReceives = deal.sellerReceives ?? deal.productPrice ?? 0;
+  await appendStatusHistory(dealRef, 'COMPLETED', 'system');
+  await dealRef.update({
+    completedAt: new Date().toISOString(),
+    buyerOtp:    admin.firestore.FieldValue.delete(), // clear OTP from document
+  });
+
+  // Notify buyer and seller
+  await Promise.all([
+    notifyUser(deal.buyerId,  'deal_completed', '✅ Deal Complete!', 'Delivery confirmed. Thank you for using TrustEscrow.', dealId),
+    notifyUser(deal.sellerId, 'deal_completed', '🎉 Payment Released!', `${sellerReceives.toLocaleString()} XAF has been sent to your MoMo account.`, dealId),
+  ]);
+
+  // ── Balance check ──
+  try {
+    const { balance } = await getPayoutBalance();
+    if (balance < LOW_BALANCE_THRESHOLD) {
+      await notifyAdmin('LOW_BALANCE', null, `Payout service balance low: ${balance.toLocaleString()} XAF (threshold: ${LOW_BALANCE_THRESHOLD.toLocaleString()} XAF)`);
+    }
+  } catch {
+    // Non-critical — don't fail the response for balance check errors
+  }
+
+  return res.json({
+    success: true,
+    message: 'Payout sequence complete. Deal marked COMPLETED.',
+    dealId,
+  });
+}
+
+// ── POST /payouts/refund ──────────────────────────────────────────────────────
+/**
+ * Refund buyer.
+ * Enforces non-refundable fee policy:
+ *   - Platform fee: NEVER refunded
+ *   - Delivery fee: refunded ONLY if riderAssigned = false
+ * Body: { dealId, reason }
+ */
+export async function issueRefund(req, res) {
+  const { dealId, reason } = req.body;
+  if (!dealId) return sendError(res, 400, 'dealId is required');
+
+  const dealRef  = db.collection('deals').doc(dealId);
+  const dealSnap = await dealRef.get();
+  if (!dealSnap.exists) return sendError(res, 404, 'Deal not found');
+
+  const deal = dealSnap.data();
+
+  // Determine refund amount
+  const productPrice = deal.productPrice ?? deal.price ?? 0;
+  const deliveryFee  = deal.deliveryFee ?? 0;
+  const riderAssigned = !!deal.riderId;
+
+  const refundAmount = riderAssigned
+    ? productPrice                       // delivery fee non-refundable once rider assigned
+    : productPrice + deliveryFee;        // delivery fee refunded if no rider yet
+
+  if (!deal.buyerPhone || !deal.buyerNetwork) {
+    return sendError(res, 422, 'Buyer phone/network not set on deal');
+  }
+
+  try {
+    const refundResult = await refundBuyer({
+      dealId,
+      phone:   deal.buyerPhone,
+      network: deal.buyerNetwork,
+      amount:  refundAmount,
+      reason:  reason ?? 'Cancellation refund',
+    });
+
+    await dealRef.update({
+      refundTransId: refundResult.transId,
+      refundAmount,
+      refundedAt:    new Date().toISOString(),
+    });
+
+    await notifyUser(
+      deal.buyerId,
+      'deal_cancelled',
+      '↩️ Refund Processing',
+      `Your refund of ${refundAmount.toLocaleString()} XAF is being processed. Platform fee is non-refundable.`,
+      dealId,
+    );
 
     return res.json({
       success: true,
-      message: 'Funds released to seller. Session marked COMPLETED.',
-      payout: {
-        reference: payoutResult.payout_reference,
-        status:    payoutResult.status,
-        amount:    payment.amount,
-      },
+      refundAmount,
+      transId: refundResult.transId,
+      breakdown: riderAssigned
+        ? 'Product price only (delivery fee non-refundable — rider was assigned)'
+        : 'Product price + delivery fee (rider not yet assigned)',
     });
   } catch (err) {
-    console.error('[PaymentController] releasePayment error:', err);
-    return sendError(res, 500, 'Internal server error');
+    console.error('[PayoutController] Refund failed:', err.message);
+    await appendStatusHistory(dealRef, 'BUYER_REFUND_FAILED', 'system', err.message);
+    await notifyAdmin('BUYER_REFUND_FAILED', dealId, `Buyer refund failed on Deal ${dealId}: ${err.message}`);
+    return sendError(res, 502, 'Refund failed. Admin notified. Please retry.');
   }
 }
 
-// ─── POST /payments/refund ───────────────────────────────────────────────────
+// ── POST /payouts/return-rider ────────────────────────────────────────────────
 /**
- * Refund escrowed funds to the buyer.
- * Triggered when delivery fails or buyer rejects product.
- *
- * Access: admin only
- *
- * Body: { session_id, reason }
+ * Pay the return rider after RETURNED state.
+ * Body: { dealId, riderPhone, riderNetwork }
  */
-export async function refundPayment(req, res) {
-  try {
-    const { session_id, reason } = req.body;
-    if (!session_id) return sendError(res, 400, 'session_id is required');
-
-    // ── 1. Load session ──
-    const session = await DealSession.findById(session_id).lean();
-    if (!session) return sendError(res, 404, 'Session not found');
-
-    // ── 2. Enforce preconditions ──
-    const refundableStatuses = ['PAYMENT_LOCKED', 'RIDER_ASSIGNED', 'IN_TRANSIT', 'DELIVERED'];
-    if (!refundableStatuses.includes(session.status)) {
-      return sendError(res, 409, `Refund not applicable in status "${session.status}"`);
-    }
-
-    // ── 3. Load payment ──
-    const payment = await Payment.findOne({ session_id, status: 'paid' });
-    if (!payment) {
-      return sendError(res, 409, 'No escrowed (paid) payment found to refund');
-    }
-
-    // ── 4. Call Kang refund (disbursement back to buyer) ──
-    let refundResult;
-    try {
-      refundResult = await refundToBuyer({
-        amount:     payment.amount,
-        phone:      payment.phone,
-        network:    payment.network,
-        session_id: String(session_id),
-      });
-    } catch (kangErr) {
-      console.error('[PaymentController] Refund failed:', kangErr.message);
-      return sendError(res, 502, 'Refund failed. Please retry or contact support.', {
-        detail: process.env.NODE_ENV === 'development' ? kangErr.message : undefined,
-      });
-    }
-
-    // ── 5. Update records ──
-    await Promise.all([
-      Payment.findByIdAndUpdate(payment._id, {
-        status:            'refunded',
-        payout_reference:  refundResult.refund_reference,
-        refunded_at:       new Date(),
-      }),
-      DealSession.findByIdAndUpdate(session_id, {
-        status:      'RETURNED',
-        returned_at: new Date(),
-      }),
-    ]);
-
-    return res.json({
-      success: true,
-      message: 'Refund issued to buyer. Session marked RETURNED.',
-      refund: {
-        reference: refundResult.refund_reference,
-        status:    refundResult.status,
-        amount:    payment.amount,
-        reason,
-      },
-    });
-  } catch (err) {
-    console.error('[PaymentController] refundPayment error:', err);
-    return sendError(res, 500, 'Internal server error');
+export async function payReturnRiderPayout(req, res) {
+  const { dealId, riderPhone, riderNetwork } = req.body;
+  if (!dealId || !riderPhone || !riderNetwork) {
+    return sendError(res, 400, 'dealId, riderPhone, and riderNetwork are required');
   }
-}
 
-// ─── POST /payments/verify/:reference ────────────────────────────────────────
-/**
- * Manually poll Kang to verify a payment status.
- * Useful as a fallback if webhook was not received.
- *
- * Access: buyer, seller, or admin
- */
-export async function verifyPayment(req, res) {
+  const dealRef  = db.collection('deals').doc(dealId);
+  const dealSnap = await dealRef.get();
+  if (!dealSnap.exists) return sendError(res, 404, 'Deal not found');
+
+  const deal = dealSnap.data();
+  if (!['RETURN_APPROVED', 'RETURN_IN_TRANSIT', 'RETURNED'].includes(deal.status)) {
+    return sendError(res, 409, `Return rider payout not applicable in status "${deal.status}"`);
+  }
+
   try {
-    const { reference } = req.params;
+    const result = await payReturnRider({
+      dealId,
+      riderId: deal.returnRiderId,
+      phone:   riderPhone,
+      network: riderNetwork,
+    });
 
-    const payment = await Payment.findOne({ transaction_reference: reference });
-    if (!payment) return sendError(res, 404, 'Payment not found');
+    await dealRef.update({
+      returnRiderPayoutTransId: result.transId,
+      returnRiderPaidAt:        new Date().toISOString(),
+    });
 
-    // Skip polling if already settled
-    if (['released', 'refunded', 'failed'].includes(payment.status)) {
-      return res.json({ success: true, payment });
-    }
-
-    const kangStatus = await checkKangPaymentStatus(reference);
-    const normalized = kangStatus.status;
-
-    // Only update if Kang says it's paid and we're still pending
-    if (normalized === 'success' && payment.status === 'pending') {
-      await Payment.findByIdAndUpdate(payment._id, {
-        status: 'paid',
-        paid_at: new Date(),
-      });
-      await DealSession.findByIdAndUpdate(payment.session_id, {
-        status: 'PAYMENT_LOCKED',
-        payment_locked_at: new Date(),
-      });
-      payment.status = 'paid';
-    }
-
-    return res.json({ success: true, payment, kang: kangStatus });
+    return res.json({ success: true, amount: result.amount, transId: result.transId });
   } catch (err) {
-    console.error('[PaymentController] verifyPayment error:', err);
-    return sendError(res, 500, 'Internal server error');
+    console.error('[PayoutController] Return rider payout failed:', err.message);
+    await appendStatusHistory(dealRef, 'RETURN_RIDER_PAYOUT_FAILED', 'system', err.message);
+    await notifyAdmin('PAYOUT_FAILED', dealId, `Return rider payout failed on Deal ${dealId}: ${err.message}`);
+    return sendError(res, 502, 'Return rider payout failed. Admin notified.');
   }
 }

@@ -179,7 +179,7 @@
 // Uses only the PUBLIC key — safe for frontend.
 // =============================================
 
-const NOTCHPAY_PUBLIC_KEY = 'pk_test.Q6hNe9ME8XSf9PpZZZ5Y4Fr7Lbz6em5N1qUMd7ob4c7m8P2FWzzdXKrHCKHnbMgjcsEgoLkggHmhu9LkPBZmXkO4MwNnYDKwLhpRRNkvrvgoYcuRYKLtc6JicCzvn';
+const NOTCHPAY_PUBLIC_KEY = import.meta.env.VITE_NOTCHPAY_PUBLIC_KEY ?? 'pk_test.Q6hNe9ME8XSf9PpZZZ5Y4Fr7Lbz6em5N1qUMd7ob4c7m8P2FWzzdXKrHCKHnbMgjcsEgoLkggHmhu9LkPBZmXkO4MwNnYDKwLhpRRNkvrvgoYcuRYKLtc6JicCzvn';
 const NOTCHPAY_BASE = 'https://api.notchpay.co';
 
 // =============================================
@@ -257,10 +257,18 @@ export async function checkPaymentStatus(reference: string) {
 }
 
 // =============================================
+// =============================================
 // TRANSFER TO SELLER (payout)
-// Sends funds from your Notchpay balance to
-// the seller's MoMo number.
-// Called after buyer confirms receipt via OTP.
+// ⚠️  WARNING: Notch Pay transfers require your SECRET key, not the public key.
+// This function WILL FAIL in production because secret keys must never be
+// exposed in frontend code.
+//
+// The correct architecture is:
+//   Frontend → calls your backend API (e.g. POST /payments/release)
+//   Backend  → calls Notch Pay /transfers with the SECRET key
+//
+// This frontend function is kept here for reference only.
+// The actual payout is handled by the backend paymentController.js → payoutToSeller().
 // =============================================
 export async function transferToSeller({
   amount,
@@ -279,6 +287,8 @@ export async function transferToSeller({
   dealId: string;
   description: string;
 }) {
+  // ⚠️  This call will be rejected by Notch Pay unless you switch to the secret key.
+  // Move this logic to your backend and call your own API instead.
   const response = await fetch(`${NOTCHPAY_BASE}/transfers`, {
     method: 'POST',
     headers: {
